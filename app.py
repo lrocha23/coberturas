@@ -7,7 +7,7 @@ st.set_page_config(page_title="Plantões UTI", layout="wide")
 # ============================
 # 0) SENHA ÚNICA
 # ============================
-SENHA = "1234"
+SENHA = "admin"
 
 senha_digitada = st.sidebar.text_input("Senha de acesso", type="password")
 
