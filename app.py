@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import datetime
 
 from backend import (
     load_plantoes,
@@ -11,6 +12,19 @@ from backend import (
 from auth_module import login, trocar_senha
 
 st.set_page_config(page_title="Plantões UTI", layout="wide")
+
+# ============================
+# CONFIGURAÇÃO DA JANELA DE INSCRIÇÕES
+# ============================
+
+INSCRICOES_ABERTURA = "2026-04-01 00:00"
+INSCRICOES_FECHAMENTO = "2026-04-03 00:00"
+
+agora = datetime.datetime.now()
+abertura = datetime.datetime.strptime(INSCRICOES_ABERTURA, "%Y-%m-%d %H:%M")
+fechamento = datetime.datetime.strptime(INSCRICOES_FECHAMENTO, "%Y-%m-%d %H:%M")
+
+inscricoes_abertas = abertura <= agora <= fechamento
 
 # ============================
 # 1) LOGIN
@@ -161,7 +175,7 @@ if is_admin:
             st.write("### Detalhes do plantão selecionado")
             st.write(linha[["data", "horario", "vagas"] + colunas_candidatos])
 
-            # INSCRIÇÃO
+            # INSCRIÇÃO (ADMIN SEMPRE PODE)
             if st.button("➕ Inscrever-me neste plantão (como médico)", key="admin_inscrever"):
                 candidatos = [linha[col] for col in colunas_candidatos]
 
@@ -183,7 +197,7 @@ if is_admin:
 
                     st.error("Este plantão já atingiu o número máximo de candidatos.")
 
-            # REMOVER INSCRIÇÃO
+            # REMOVER INSCRIÇÃO (ADMIN SEMPRE PODE)
             if st.button("❌ Remover minha inscrição deste plantão (como médico)", key="admin_remover"):
                 candidatos = [linha[col] for col in colunas_candidatos]
 
@@ -204,7 +218,7 @@ if is_admin:
                     st.success("✔️ Inscrição removida.")
                     st.stop()
 
-        # MEUS PLANTÕES
+        # MEUS PLANTÕES (ADMIN COMO MÉDICO)
         st.markdown("### 📌 Meus plantões (como médico)")
 
         mask = plantoes_df[colunas_candidatos].apply(lambda row: nome_usuario in row.values, axis=1)
@@ -255,56 +269,62 @@ else:
     st.write(linha[["data", "horario", "vagas"] + colunas_candidatos])
 
     # ============================
-    # INSCRIÇÃO
+    # INSCRIÇÃO (MÉDICO — BLOQUEADO FORA DO PRAZO)
     # ============================
 
-    if st.button("➕ Inscrever-me neste plantão"):
-        candidatos = [linha[col] for col in colunas_candidatos]
+    if not inscricoes_abertas:
+        st.warning(f"⛔ Inscrições fechadas.\n\nAbertura: {INSCRICOES_ABERTURA}\nFechamento: {INSCRICOES_FECHAMENTO}")
+    else:
+        if st.button("➕ Inscrever-me neste plantão"):
+            candidatos = [linha[col] for col in colunas_candidatos]
 
-        if nome_usuario in candidatos:
-            st.warning("Você já está inscrito neste plantão. Não é necessário repetir.")
-        else:
-            for col in colunas_candidatos:
-                if linha[col] in ["", None]:
-                    plantoes_df.at[idx_escolhido, col] = nome_usuario
-                    save_plantoes(plantoes_df)
-                    registrar_log(
-                        usuario_email,
-                        "inscricao",
-                        plantao=f"{linha['data']} {linha['horario']}",
-                        detalhes=f"Inscrito como {nome_usuario}"
-                    )
-                    st.success("✔️ Sua inscrição foi registrada com sucesso!")
-                    st.stop()
+            if nome_usuario in candidatos:
+                st.warning("Você já está inscrito neste plantão. Não é necessário repetir.")
+            else:
+                for col in colunas_candidatos:
+                    if linha[col] in ["", None]:
+                        plantoes_df.at[idx_escolhido, col] = nome_usuario
+                        save_plantoes(plantoes_df)
+                        registrar_log(
+                            usuario_email,
+                            "inscricao",
+                            plantao=f"{linha['data']} {linha['horario']}",
+                            detalhes=f"Inscrito como {nome_usuario}"
+                        )
+                        st.success("✔️ Sua inscrição foi registrada com sucesso!")
+                        st.stop()
 
-            st.error("Este plantão já atingiu o número máximo de candidatos.")
-
-    # ============================
-    # REMOVER INSCRIÇÃO
-    # ============================
-
-    if st.button("❌ Remover minha inscrição deste plantão"):
-        candidatos = [linha[col] for col in colunas_candidatos]
-
-        if nome_usuario not in candidatos:
-            st.warning("Você não está inscrito neste plantão.")
-        else:
-            for col in colunas_candidatos:
-                if plantoes_df.at[idx_escolhido, col] == nome_usuario:
-                    plantoes_df.at[idx_escolhido, col] = ""
-
-            save_plantoes(plantoes_df)
-            registrar_log(
-                usuario_email,
-                "remover_inscricao",
-                plantao=f"{linha['data']} {linha['horario']}",
-                detalhes=f"Removeu inscrição de {nome_usuario}"
-            )
-            st.success("✔️ Sua inscrição foi removida.")
-            st.stop()
+                st.error("Este plantão já atingiu o número máximo de candidatos.")
 
     # ============================
-    # MEUS PLANTÕES
+    # REMOVER INSCRIÇÃO (MÉDICO — BLOQUEADO FORA DO PRAZO)
+    # ============================
+
+    if not inscricoes_abertas:
+        st.warning("⛔ Inscrições fechadas. Não é possível remover inscrição.")
+    else:
+        if st.button("❌ Remover minha inscrição deste plantão"):
+            candidatos = [linha[col] for col in colunas_candidatos]
+
+            if nome_usuario not in candidatos:
+                st.warning("Você não está inscrito neste plantão.")
+            else:
+                for col in colunas_candidatos:
+                    if plantoes_df.at[idx_escolhido, col] == nome_usuario:
+                        plantoes_df.at[idx_escolhido, col] = ""
+
+                save_plantoes(plantoes_df)
+                registrar_log(
+                    usuario_email,
+                    "remover_inscricao",
+                    plantao=f"{linha['data']} {linha['horario']}",
+                    detalhes=f"Removeu inscrição de {nome_usuario}"
+                )
+                st.success("✔️ Sua inscrição foi removida.")
+                st.stop()
+
+    # ============================
+    # MEUS PLANTÕES (MÉDICO)
     # ============================
 
     st.markdown("### 📌 Meus plantões")
