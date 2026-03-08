@@ -16,7 +16,7 @@ def get_client():
 
 def get_sheet():
     client = get_client()
-    return client.open("coberturas_backend")
+    return client.open("coberturas_backend_oficial")
 
 # ============================
 # 2) Funções de leitura
