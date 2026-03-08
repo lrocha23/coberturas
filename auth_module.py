@@ -88,3 +88,22 @@ def login():
             st.experimental_rerun()
 
         return None
+
+def trocar_senha(email):
+    st.title("Trocar senha")
+
+    nova = st.text_input("Nova senha", type="password", key="trocar_nova_senha")
+    confirmar = st.text_input("Confirmar nova senha", type="password", key="trocar_confirmar_senha")
+
+    if st.button("Salvar nova senha"):
+        if nova != confirmar:
+            st.error("As senhas não coincidem.")
+            return
+
+        usuarios = load_usuarios()
+        usuarios.loc[usuarios["email"] == email, "senha_hash"] = hash_senha(nova)
+        save_usuarios(usuarios)
+
+        registrar_log(email, "troca_senha", detalhes="Usuário trocou a senha")
+
+        st.success("Senha alterada com sucesso!")
