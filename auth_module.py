@@ -46,7 +46,7 @@ def login():
             if user["senha_hash"] == "" or pd.isna(user["senha_hash"]):
                 st.session_state.login_step = "first_access"
                 st.session_state.pending_email = email
-                st.experimental_rerun()
+                st.rerun()   # <--- CORRIGIDO
 
             # Login normal
             if not verificar_senha(senha, user["senha_hash"]):
@@ -85,9 +85,13 @@ def login():
             st.session_state.login_step = "login"
             st.session_state.pending_email = None
             st.session_state["usuario"] = None
-            st.experimental_rerun()
+            st.rerun()   # <--- CORRIGIDO
 
         return None
+
+# ============================
+# 3) Trocar senha
+# ============================
 
 def trocar_senha(email):
     st.title("Trocar senha")
