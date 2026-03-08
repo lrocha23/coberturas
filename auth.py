@@ -20,69 +20,71 @@ def verificar_senha(senha_digitada, senha_hash):
 def login():
     st.sidebar.title("Login")
 
-    email = st.sidebar.text_input("Email")
-    senha = st.sidebar.text_input("Senha", type="password")
+    # Inicializa estado
+    if "login_step" not in st.session_state:
+        st.session_state.login_step = "login"   # login → first_access → done
+    if "pending_email" not in st.session_state:
+        st.session_state.pending_email = None
 
-    if st.sidebar.button("Entrar"):
-        usuarios = load_usuarios()
+    # ============================
+    # ETAPA 1 — LOGIN NORMAL
+    # ============================
+    if st.session_state.login_step == "login":
+        email = st.sidebar.text_input("Email")
+        senha = st.sidebar.text_input("Senha", type="password")
 
-        if email not in usuarios["email"].values:
-            st.error("Email não encontrado.")
-            return None
+        if st.sidebar.button("Entrar"):
+            usuarios = load_usuarios()
 
-        user = usuarios[usuarios["email"] == email].iloc[0]
+            if email not in usuarios["email"].values:
+                st.error("Email não encontrado.")
+                return None
 
-        # Primeiro acesso → senha_hash vazio
-        if user["senha_hash"] == "" or pd.isna(user["senha_hash"]):
-            st.warning("Parece que este é seu primeiro acesso. Crie uma nova senha.")
+            user = usuarios[usuarios["email"] == email].iloc[0]
 
-            nova = st.text_input("Nova senha", type="password")
-            confirmar = st.text_input("Confirmar nova senha", type="password")
+            # Primeiro acesso
+            if user["senha_hash"] == "" or pd.isna(user["senha_hash"]):
+                st.session_state.login_step = "first_access"
+                st.session_state.pending_email = email
+                st.experimental_rerun()
 
-            if st.button("Salvar nova senha"):
-                if nova != confirmar:
-                    st.error("As senhas não coincidem.")
-                    return None
+            # Login normal
+            if not verificar_senha(senha, user["senha_hash"]):
+                st.error("Senha incorreta.")
+                return None
 
-                usuarios.loc[usuarios["email"] == email, "senha_hash"] = hash_senha(nova)
-                save_usuarios(usuarios)
+            registrar_log(email, "login")
+            st.session_state["usuario"] = email
+            return email
 
-                registrar_log(email, "primeiro_acesso", detalhes="Criou senha inicial")
+        return st.session_state.get("usuario", None)
 
-                st.success("Senha criada com sucesso! Faça login novamente.")
-                st.stop()
+    # ============================
+    # ETAPA 2 — PRIMEIRO ACESSO
+    # ============================
+    if st.session_state.login_step == "first_access":
+        st.warning("Parece que este é seu primeiro acesso. Crie uma nova senha.")
 
-            return None
+        nova = st.text_input("Nova senha", type="password", key="nova_senha")
+        confirmar = st.text_input("Confirmar nova senha", type="password", key="confirmar_senha")
 
-        # Login normal
-        if not verificar_senha(senha, user["senha_hash"]):
-            st.error("Senha incorreta.")
-            return None
+        if st.button("Salvar nova senha"):
+            if nova != confirmar:
+                st.error("As senhas não coincidem.")
+                return None
 
-        registrar_log(email, "login")
-        st.session_state["usuario"] = email
-        return email
+            usuarios = load_usuarios()
+            usuarios.loc[usuarios["email"] == st.session_state.pending_email, "senha_hash"] = hash_senha(nova)
+            save_usuarios(usuarios)
 
-    return st.session_state.get("usuario", None)
+            registrar_log(st.session_state.pending_email, "primeiro_acesso", detalhes="Criou senha inicial")
 
-# ============================
-# 3) Troca de senha
-# ============================
+            st.success("Senha criada com sucesso! Faça login novamente.")
 
-def trocar_senha(email):
-    st.subheader("Trocar senha")
+            # Reset do fluxo
+            st.session_state.login_step = "login"
+            st.session_state.pending_email = None
+            st.session_state["usuario"] = None
+            st.experimental_rerun()
 
-    nova = st.text_input("Nova senha", type="password")
-    confirmar = st.text_input("Confirmar senha", type="password")
-
-    if st.button("Salvar nova senha"):
-        if nova != confirmar:
-            st.error("As senhas não coincidem.")
-            return
-
-        usuarios = load_usuarios()
-        usuarios.loc[usuarios["email"] == email, "senha_hash"] = hash_senha(nova)
-        save_usuarios(usuarios)
-
-        registrar_log(email, "troca_senha")
-        st.success("Senha alterada com sucesso!")
+        return None
