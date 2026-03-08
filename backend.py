@@ -28,7 +28,8 @@ def get_client():
 
 def get_sheet():
     client = get_client()
-    return client.open("coberturas_backend_oficial")
+    # ABRE A PLANILHA PELO ID — 100% confiável
+    return client.open_by_key("1H91D58YS8bpohvxzmqBwaOMk2SvI2p7bx8B8Nnp-G5Y")
 
 # ============================
 # 2) Funções de leitura
