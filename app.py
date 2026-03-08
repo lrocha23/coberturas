@@ -30,7 +30,7 @@ st.sidebar.markdown(f"**Perfil:** {'Administrador' if is_admin else 'Médico'}")
 
 if st.sidebar.button("Trocar minha senha"):
     trocar_senha(usuario_email)
-    st.stop()
+    st.rerun()
 
 st.title("📋 Sistema de Inscrição de Plantões - UTI")
 
