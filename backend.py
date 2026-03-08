@@ -16,16 +16,11 @@ def get_client():
         "https://www.googleapis.com/auth/drive"
     ]
 
-    # cria credenciais com escopos explícitos
     creds = Credentials.from_service_account_info(
         creds_dict,
         scopes=scopes
     )
 
-    # força uso de JWT local, sem refresh token
-    creds._use_self_signed_jwt = True
-
-    # cria cliente gspread manualmente
     client = gspread.Client(auth=creds)
     client.session = gspread.auth.HTTPClient(creds)
 
