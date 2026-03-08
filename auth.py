@@ -14,7 +14,7 @@ def verificar_senha(senha_digitada, senha_hash):
     return bcrypt.checkpw(senha_digitada.encode(), senha_hash.encode())
 
 # ============================
-# 2) Login
+# 2) Login com fluxo de primeiro acesso
 # ============================
 
 def login():
@@ -32,6 +32,29 @@ def login():
 
         user = usuarios[usuarios["email"] == email].iloc[0]
 
+        # Primeiro acesso → senha_hash vazio
+        if user["senha_hash"] == "" or pd.isna(user["senha_hash"]):
+            st.warning("Parece que este é seu primeiro acesso. Crie uma nova senha.")
+
+            nova = st.text_input("Nova senha", type="password")
+            confirmar = st.text_input("Confirmar nova senha", type="password")
+
+            if st.button("Salvar nova senha"):
+                if nova != confirmar:
+                    st.error("As senhas não coincidem.")
+                    return None
+
+                usuarios.loc[usuarios["email"] == email, "senha_hash"] = hash_senha(nova)
+                save_usuarios(usuarios)
+
+                registrar_log(email, "primeiro_acesso", detalhes="Criou senha inicial")
+
+                st.success("Senha criada com sucesso! Faça login novamente.")
+                st.stop()
+
+            return None
+
+        # Login normal
         if not verificar_senha(senha, user["senha_hash"]):
             st.error("Senha incorreta.")
             return None
