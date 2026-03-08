@@ -8,7 +8,7 @@ from backend import (
     load_usuarios,
     registrar_log,
 )
-from auth_module import login, trocar_senha
+from auth_module import login
 
 st.set_page_config(page_title="Plantões UTI", layout="wide")
 
