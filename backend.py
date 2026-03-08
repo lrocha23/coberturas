@@ -10,8 +10,25 @@ from datetime import datetime
 
 def get_client():
     creds_dict = st.secrets["gcp_service_account"]
-    creds = Credentials.from_service_account_info(creds_dict)
-    client = gspread.authorize(creds)
+
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive"
+    ]
+
+    # cria credenciais com escopos explícitos
+    creds = Credentials.from_service_account_info(
+        creds_dict,
+        scopes=scopes
+    )
+
+    # força uso de JWT local, sem refresh token
+    creds._use_self_signed_jwt = True
+
+    # cria cliente gspread manualmente
+    client = gspread.Client(auth=creds)
+    client.session = gspread.auth.HTTPClient(creds)
+
     return client
 
 def get_sheet():
