@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import datetime
+import pytz
 
 from backend import (
     load_plantoes,
@@ -14,17 +15,12 @@ from auth_module import login, trocar_senha
 st.set_page_config(page_title="Plantões UTI", layout="wide")
 
 # ============================
-# CONFIGURAÇÃO DA JANELA DE INSCRIÇÕES
+# FUNÇÃO DE HORÁRIO LOCAL
 # ============================
 
-INSCRICOES_ABERTURA = "2026-04-01 00:00"
-INSCRICOES_FECHAMENTO = "2026-04-03 00:00"
-
-agora = datetime.datetime.now()
-abertura = datetime.datetime.strptime(INSCRICOES_ABERTURA, "%Y-%m-%d %H:%M")
-fechamento = datetime.datetime.strptime(INSCRICOES_FECHAMENTO, "%Y-%m-%d %H:%M")
-
-inscricoes_abertas = abertura <= agora <= fechamento
+def agora_brasil():
+    tz = pytz.timezone("America/Sao_Paulo")
+    return datetime.datetime.now(tz)
 
 # ============================
 # 1) LOGIN
@@ -38,6 +34,7 @@ usuarios_df = load_usuarios()
 user_row = usuarios_df[usuarios_df["email"] == usuario_email].iloc[0]
 
 is_admin = bool(user_row.get("admin", False))
+st.session_state["is_admin"] = is_admin  # armazenar para controle real
 
 st.sidebar.markdown(f"**Logado como:** {usuario_email}")
 st.sidebar.markdown(f"**Perfil:** {'Administrador' if is_admin else 'Médico'}")
@@ -70,10 +67,21 @@ for col in colunas_candidatos:
         plantoes_df[col] = ""
 
 # ============================
+# BLOQUEIO REAL DO ADMIN
+# ============================
+
+def check_admin():
+    if "is_admin" not in st.session_state or st.session_state["is_admin"] is False:
+        st.error("⛔ Você não tem permissão para acessar a área do administrador.")
+        st.stop()
+
+# ============================
 # 3) ÁREA DO ADMIN
 # ============================
 
-if is_admin:
+if st.session_state["is_admin"]:
+    check_admin()
+
     st.subheader("👑 Área do Administrador")
 
     st.markdown("""
@@ -118,7 +126,7 @@ if is_admin:
     st.dataframe(plantoes_df, use_container_width=True)
 
     # ============================
-    # EXPORTAR ESCALA FINAL (ADMIN)
+    #  EXPORTAR ESCALA FINAL (ADMIN)
     # ============================
 
     st.subheader("📤 Exportar escala final")
@@ -269,59 +277,53 @@ else:
     st.write(linha[["data", "horario", "vagas"] + colunas_candidatos])
 
     # ============================
-    # INSCRIÇÃO (MÉDICO — BLOQUEADO FORA DO PRAZO)
+    # INSCRIÇÃO (MÉDICO — SEM CONTROLE DE HORÁRIO)
     # ============================
 
-    if not inscricoes_abertas:
-        st.warning(f"⛔ Inscrições fechadas.\n\nAbertura: {INSCRICOES_ABERTURA}\nFechamento: {INSCRICOES_FECHAMENTO}")
-    else:
-        if st.button("➕ Inscrever-me neste plantão"):
-            candidatos = [linha[col] for col in colunas_candidatos]
+    if st.button("➕ Inscrever-me neste plantão"):
+        candidatos = [linha[col] for col in colunas_candidatos]
 
-            if nome_usuario in candidatos:
-                st.warning("Você já está inscrito neste plantão. Não é necessário repetir.")
-            else:
-                for col in colunas_candidatos:
-                    if linha[col] in ["", None]:
-                        plantoes_df.at[idx_escolhido, col] = nome_usuario
-                        save_plantoes(plantoes_df)
-                        registrar_log(
-                            usuario_email,
-                            "inscricao",
-                            plantao=f"{linha['data']} {linha['horario']}",
-                            detalhes=f"Inscrito como {nome_usuario}"
-                        )
-                        st.success("✔️ Sua inscrição foi registrada com sucesso!")
-                        st.stop()
+        if nome_usuario in candidatos:
+            st.warning("Você já está inscrito neste plantão. Não é necessário repetir.")
+        else:
+            for col in colunas_candidatos:
+                if linha[col] in ["", None]:
+                    plantoes_df.at[idx_escolhido, col] = nome_usuario
+                    save_plantoes(plantoes_df)
+                    registrar_log(
+                        usuario_email,
+                        "inscricao",
+                        plantao=f"{linha['data']} {linha['horario']}",
+                        detalhes=f"Inscrito como {nome_usuario}"
+                    )
+                    st.success("✔️ Sua inscrição foi registrada com sucesso!")
+                    st.stop()
 
-                st.error("Este plantão já atingiu o número máximo de candidatos.")
+            st.error("Este plantão já atingiu o número máximo de candidatos.")
 
     # ============================
-    # REMOVER INSCRIÇÃO (MÉDICO — BLOQUEADO FORA DO PRAZO)
+    # REMOVER INSCRIÇÃO (MÉDICO — SEM CONTROLE DE HORÁRIO)
     # ============================
 
-    if not inscricoes_abertas:
-        st.warning("⛔ Inscrições fechadas. Não é possível remover inscrição.")
-    else:
-        if st.button("❌ Remover minha inscrição deste plantão"):
-            candidatos = [linha[col] for col in colunas_candidatos]
+    if st.button("❌ Remover minha inscrição deste plantão"):
+        candidatos = [linha[col] for col in colunas_candidatos]
 
-            if nome_usuario not in candidatos:
-                st.warning("Você não está inscrito neste plantão.")
-            else:
-                for col in colunas_candidatos:
-                    if plantoes_df.at[idx_escolhido, col] == nome_usuario:
-                        plantoes_df.at[idx_escolhido, col] = ""
+        if nome_usuario not in candidatos:
+            st.warning("Você não está inscrito neste plantão.")
+        else:
+            for col in colunas_candidatos:
+                if plantoes_df.at[idx_escolhido, col] == nome_usuario:
+                    plantoes_df.at[idx_escolhido, col] = ""
 
-                save_plantoes(plantoes_df)
-                registrar_log(
-                    usuario_email,
-                    "remover_inscricao",
-                    plantao=f"{linha['data']} {linha['horario']}",
-                    detalhes=f"Removeu inscrição de {nome_usuario}"
-                )
-                st.success("✔️ Sua inscrição foi removida.")
-                st.stop()
+            save_plantoes(plantoes_df)
+            registrar_log(
+                usuario_email,
+                "remover_inscricao",
+                plantao=f"{linha['data']} {linha['horario']}",
+                detalhes=f"Removeu inscrição de {nome_usuario}"
+            )
+            st.success("✔️ Sua inscrição foi removida.")
+            st.stop()
 
     # ============================
     # MEUS PLANTÕES (MÉDICO)
