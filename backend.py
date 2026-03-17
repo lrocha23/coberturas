@@ -3,6 +3,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 import pandas as pd
 from datetime import datetime
+import pytz
 
 # ============================
 # 1) Conexão com Google Sheets
@@ -28,7 +29,6 @@ def get_client():
 
 def get_sheet():
     client = get_client()
-    # ABRE A PLANILHA PELO ID — 100% confiável
     return client.open_by_key("1H91D58YS8bpohvxzmqBwaOMk2SvI2p7bx8B8Nnp-G5Y")
 
 # ============================
@@ -48,7 +48,19 @@ def load_medicos():
 def load_usuarios():
     ws = get_sheet().worksheet("usuarios")
     data = ws.get_all_records()
-    return pd.DataFrame(data)
+    df = pd.DataFrame(data)
+
+    # 🔥 CORREÇÃO CRÍTICA: converter admin para booleano real
+    if "admin" in df.columns:
+        df["admin"] = (
+            df["admin"]
+            .astype(str)
+            .str.strip()
+            .str.lower()
+            .isin(["true", "1", "yes", "sim"])
+        )
+
+    return df
 
 # ============================
 # 3) Funções de escrita
@@ -65,10 +77,13 @@ def save_usuarios(df):
     ws.update([df.columns.values.tolist()] + df.values.tolist())
 
 # ============================
-# 4) Logs
+# 4) Logs (com horário de Brasília)
 # ============================
 
 def registrar_log(usuario, acao, plantao="", detalhes=""):
     ws = get_sheet().worksheet("logs")
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    tz = pytz.timezone("America/Sao_Paulo")
+    timestamp = datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S")
+
     ws.append_row([timestamp, usuario, acao, plantao, detalhes])
