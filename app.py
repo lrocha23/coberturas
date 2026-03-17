@@ -33,7 +33,8 @@ if not usuario_email:
 usuarios_df = load_usuarios()
 user_row = usuarios_df[usuarios_df["email"] == usuario_email].iloc[0]
 
-is_admin = bool(user_row.get("admin", False))
+raw_admin = str(user_row.get("admin", "")).strip().lower()
+is_admin = raw_admin in ["true", "1", "yes", "sim"]
 st.session_state["is_admin"] = is_admin  # armazenar para controle real
 
 st.sidebar.markdown(f"**Logado como:** {usuario_email}")
