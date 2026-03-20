@@ -13,8 +13,8 @@ def verificar_senha(senha_digitada: str, senha_hash: str) -> bool:
 
 def validar_nova_senha(senha: str):
     senha = senha or ""
-    if len(senha) < 10:
-        return False, "A senha deve ter pelo menos 10 caracteres."
+    if len(senha) < 8:
+        return False, "A senha deve ter pelo menos 8 caracteres."
     return True, ""
 
 
@@ -28,8 +28,52 @@ def _buscar_usuario_por_email(email: str):
 
 def logout():
     for chave in ["usuario", "is_admin"]:
-        if chave in st.session_state:
-            del st.session_state[chave]
+        st.session_state.pop(chave, None)
+
+
+def _fluxo_primeiro_acesso(email: str, usuarios, user):
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("**Primeiro acesso**")
+    chave_primeiro_acesso = st.sidebar.text_input("Chave de primeiro acesso", type="password", key="primeiro_acesso_chave")
+    nova = st.sidebar.text_input("Crie sua senha", type="password", key="primeiro_nova")
+    confirmar = st.sidebar.text_input("Confirme sua senha", type="password", key="primeiro_confirma")
+
+    if st.sidebar.button("Ativar conta"):
+        chave_correta = st.secrets.get("first_access_key", "")
+
+        if not chave_correta:
+            st.error("A chave de primeiro acesso não está configurada no app.")
+            return None
+
+        if chave_primeiro_acesso != chave_correta:
+            st.error("Chave de primeiro acesso inválida.")
+            registrar_log(email, "primeiro_acesso_falhou", detalhes="Chave global incorreta")
+            return None
+
+        ok, msg = validar_nova_senha(nova)
+        if not ok:
+            st.error(msg)
+            return None
+
+        if nova != confirmar:
+            st.error("As senhas não coincidem.")
+            return None
+
+        usuarios.loc[
+            usuarios["email"].astype(str).str.strip().str.lower() == email.strip().lower(),
+            "senha_hash"
+        ] = hash_senha(nova)
+
+        save_usuarios(usuarios)
+
+        st.session_state["usuario"] = str(user["email"]).strip()
+        st.session_state["is_admin"] = bool(user.get("admin", False))
+
+        registrar_log(email, "primeiro_acesso_ok", detalhes="Senha criada no primeiro acesso")
+        st.success("Conta ativada com sucesso!")
+        st.rerun()
+
+    return None
 
 
 def login():
@@ -41,22 +85,25 @@ def login():
     email = st.sidebar.text_input("Email").strip()
     senha = st.sidebar.text_input("Senha", type="password")
 
-    if st.sidebar.button("Entrar"):
-        usuarios, user = _buscar_usuario_por_email(email)
+    usuarios, user = _buscar_usuario_por_email(email) if email else (None, None)
 
+    if user is not None and not bool(user.get("ativo", True)):
+        st.sidebar.error("Seu acesso está inativo.")
+        return None
+
+    if user is not None:
+        senha_hash = str(user.get("senha_hash", "") or "").strip()
+        if not senha_hash:
+            return _fluxo_primeiro_acesso(email, usuarios, user)
+
+    if st.sidebar.button("Entrar"):
         if user is None:
             st.error("Credenciais inválidas.")
             return None
 
-        if not bool(user.get("ativo", True)):
-            st.error("Seu acesso está inativo. Fale com o administrador.")
-            registrar_log(email, "login_bloqueado", detalhes="Tentativa com usuário inativo")
-            return None
-
         senha_hash = str(user.get("senha_hash", "") or "").strip()
         if not senha_hash:
-            st.error("Sua conta ainda não tem senha configurada. Peça ao administrador para definir uma senha temporária.")
-            registrar_log(email, "login_bloqueado", detalhes="Usuário sem senha configurada")
+            st.error("Você precisa concluir o primeiro acesso antes de entrar.")
             return None
 
         try:
