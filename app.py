@@ -1,246 +1,244 @@
 import streamlit as st
 import pandas as pd
-import datetime
-import pytz
 
-from backend import (
-    load_plantoes,
-    save_plantoes,
-    load_medicos,
-    load_usuarios,
-    registrar_log,
-)
-from auth_module import login, trocar_senha
+from backend import load_plantoes, save_plantoes, load_medicos, load_usuarios, registrar_log
+from auth_module import login, trocar_senha, logout
 
 st.set_page_config(page_title="Plantões UTI", layout="wide")
 
-# ============================
-# FUNÇÃO DE HORÁRIO LOCAL
-# ============================
+COLUNAS_CANDIDATOS = ["candidato1", "candidato2", "candidato3", "candidato4", "candidato5"]
 
-def agora_brasil():
-    tz = pytz.timezone("America/Sao_Paulo")
-    return datetime.datetime.now(tz)
 
-# ============================
-# 1) LOGIN
-# ============================
+def normalizar_texto(valor):
+    if pd.isna(valor):
+        return ""
+    return str(valor).strip()
+
+
+def normalizar_nome(valor):
+    return normalizar_texto(valor)
+
+
+def garantir_colunas_candidatos(df):
+    df = df.copy()
+    for col in COLUNAS_CANDIDATOS:
+        if col not in df.columns:
+            df[col] = ""
+    return df
+
+
+def linha_para_label(idx, row):
+    data = normalizar_texto(row.get("data", ""))
+    horario = normalizar_texto(row.get("horario", ""))
+    return f"{idx} - {data} {horario}".strip()
+
+
+def candidatos_da_linha(row):
+    candidatos = []
+    for col in COLUNAS_CANDIDATOS:
+        nome = normalizar_nome(row.get(col, ""))
+        if nome:
+            candidatos.append(nome)
+    return candidatos
+
+
+def validar_sem_duplicidade(df):
+    for idx, row in df.iterrows():
+        candidatos = candidatos_da_linha(row)
+        if len(candidatos) != len(set(candidatos)):
+            raise ValueError(f"Linha {idx + 1}: o mesmo médico aparece mais de uma vez.")
+
+
+def inscrever_usuario(df, idx_escolhido, nome_usuario):
+    df = df.copy()
+    linha = df.loc[idx_escolhido]
+    candidatos = candidatos_da_linha(linha)
+
+    if nome_usuario in candidatos:
+        return False, "Você já está inscrito neste plantão.", df
+
+    for col in COLUNAS_CANDIDATOS:
+        if normalizar_nome(linha.get(col, "")) == "":
+            df.at[idx_escolhido, col] = nome_usuario
+            return True, "✔️ Sua inscrição foi registrada com sucesso!", df
+
+    return False, "Este plantão já atingiu o número máximo de candidatos.", df
+
+
+def remover_usuario(df, idx_escolhido, nome_usuario):
+    df = df.copy()
+    linha = df.loc[idx_escolhido]
+    candidatos = candidatos_da_linha(linha)
+
+    if nome_usuario not in candidatos:
+        return False, "Você não está inscrito neste plantão.", df
+
+    for col in COLUNAS_CANDIDATOS:
+        if normalizar_nome(df.at[idx_escolhido, col]) == nome_usuario:
+            df.at[idx_escolhido, col] = ""
+
+    return True, "✔️ Sua inscrição foi removida.", df
+
+
+def tabela_medico(df, nome_usuario):
+    base = df.copy()
+    base["inscritos"] = base[COLUNAS_CANDIDATOS].apply(lambda row: sum(normalizar_nome(v) != "" for v in row), axis=1)
+    base["minha_inscricao"] = base[COLUNAS_CANDIDATOS].apply(lambda row: nome_usuario in [normalizar_nome(v) for v in row], axis=1)
+    colunas = [c for c in ["data", "horario", "vagas"] if c in base.columns] + ["inscritos", "minha_inscricao"]
+    return base[colunas]
+
+
+def tabela_meus_plantoes(df, nome_usuario):
+    mask = df[COLUNAS_CANDIDATOS].apply(lambda row: nome_usuario in [normalizar_nome(v) for v in row], axis=1)
+    return df.loc[mask, [c for c in ["data", "horario", "vagas"] if c in df.columns]]
+
 
 usuario_email = login()
 if not usuario_email:
     st.stop()
 
 usuarios_df = load_usuarios()
-user_row = usuarios_df[usuarios_df["email"] == usuario_email].iloc[0]
+usuarios_filtrados = usuarios_df[usuarios_df["email"].astype(str).str.strip().str.lower() == usuario_email.strip().lower()]
+if usuarios_filtrados.empty:
+    st.error("Usuário autenticado não encontrado na aba 'usuarios'.")
+    st.stop()
 
-raw_admin = str(user_row.get("admin", "")).strip().lower()
-is_admin = raw_admin in ["true", "1", "yes", "sim"]
-st.session_state["is_admin"] = is_admin  # armazenar para controle real
+user_row = usuarios_filtrados.iloc[0]
+is_admin = bool(user_row.get("admin", False))
+st.session_state["is_admin"] = is_admin
 
 st.sidebar.markdown(f"**Logado como:** {usuario_email}")
 st.sidebar.markdown(f"**Perfil:** {'Administrador' if is_admin else 'Médico'}")
 
-if st.sidebar.button("Trocar minha senha"):
-    trocar_senha(usuario_email)
+if st.sidebar.button("Sair"):
+    registrar_log(usuario_email, "logout")
+    logout()
     st.rerun()
 
 st.title("📋 Sistema de Inscrição de Plantões - UTI")
 
-# ============================
-# 2) CARREGAR DADOS
-# ============================
+with st.expander("Trocar minha senha"):
+    trocar_senha(usuario_email)
 
-plantoes_df = load_plantoes()
+plantoes_df = garantir_colunas_candidatos(load_plantoes())
 medicos_df = load_medicos()
 
 if "nome" not in medicos_df.columns or "email" not in medicos_df.columns:
     st.error("A aba 'medicos' precisa ter as colunas: id, nome, email.")
     st.stop()
 
-# Nome do médico logado
+match_medico = medicos_df[
+    medicos_df["email"].astype(str).str.strip().str.lower() == usuario_email.strip().lower()
+]
 nome_usuario = None
-if usuario_email in medicos_df["email"].values:
-    nome_usuario = medicos_df.loc[medicos_df["email"] == usuario_email, "nome"].iloc[0]
+if not match_medico.empty:
+    nome_usuario = normalizar_nome(match_medico.iloc[0]["nome"])
 
-colunas_candidatos = ["candidato1", "candidato2", "candidato3", "candidato4", "candidato5"]
-for col in colunas_candidatos:
-    if col not in plantoes_df.columns:
-        plantoes_df[col] = ""
-
-# ============================
-# BLOQUEIO REAL DO ADMIN
-# ============================
-
-def check_admin():
-    if "is_admin" not in st.session_state or st.session_state["is_admin"] is False:
-        st.error("⛔ Você não tem permissão para acessar a área do administrador.")
-        st.stop()
-
-# ============================
-# 3) ÁREA DO ADMIN
-# ============================
-
-if st.session_state["is_admin"]:
-    check_admin()
-
+if is_admin:
     st.subheader("👑 Área do Administrador")
+    st.markdown("Aqui você pode editar qualquer plantão e também se inscrever como médico.")
 
-    st.markdown("""
-    Aqui você pode editar **qualquer plantão**, ajustar candidatos,
-    corrigir erros e salvar a planilha completa.
-    """)
-
-    nomes_medicos = medicos_df["nome"].tolist()
+    nomes_medicos = sorted({normalizar_nome(n) for n in medicos_df["nome"].tolist() if normalizar_nome(n)})
 
     column_config = {
         col: st.column_config.SelectboxColumn(
             label=col,
             options=[""] + nomes_medicos,
-            required=False
+            required=False,
         )
-        for col in colunas_candidatos
+        for col in COLUNAS_CANDIDATOS
     }
 
     df_editado = st.data_editor(
         plantoes_df,
         column_config=column_config,
         use_container_width=True,
-        key="editor_admin"
+        key="editor_admin",
     )
 
-    # Verificar duplicidade
-    for idx, row in df_editado.iterrows():
-        candidatos = [row[col] for col in colunas_candidatos]
-        candidatos_limpos = [c for c in candidatos if c not in ["", None]]
-
-        if len(candidatos_limpos) != len(set(candidatos_limpos)):
-            st.error(f"⚠️ Linha {idx+1}: o mesmo médico aparece mais de uma vez.")
-            st.stop()
-
     if st.button("Salvar alterações (Administrador)"):
-        save_plantoes(df_editado)
-        registrar_log(usuario_email, "salvar_planilha", detalhes="Admin atualizou todos os plantões")
-        st.success("✔️ Alterações salvas com sucesso! A planilha foi atualizada.")
-        st.stop()
+        try:
+            validar_sem_duplicidade(df_editado)
+            save_plantoes(df_editado)
+            registrar_log(usuario_email, "salvar_planilha", detalhes="Admin atualizou todos os plantões")
+            st.success("✔️ Alterações salvas com sucesso!")
+            st.rerun()
+        except Exception as e:
+            st.error(f"Não foi possível salvar: {e}")
 
     st.subheader("📌 Visualização atual dos plantões")
     st.dataframe(plantoes_df, use_container_width=True)
 
-    # ============================
-    #  EXPORTAR ESCALA FINAL (ADMIN)
-    # ============================
-
     st.subheader("📤 Exportar escala final")
-
-    st.markdown("""
-    Gere um arquivo CSV com todos os plantões e candidatos cadastrados.
-    Ideal para auditoria, conferência ou envio para coordenação.
-    """)
-
-    if st.button("📥 Baixar escala final (CSV)"):
-        df_export = plantoes_df.copy()
-        csv = df_export.to_csv(index=False).encode("utf-8")
-
-        st.download_button(
-            label="Clique aqui para baixar o arquivo",
-            data=csv,
-            file_name="escala_final.csv",
-            mime="text/csv"
-        )
-
-        registrar_log(
+    csv = plantoes_df.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        label="📥 Baixar escala final (CSV)",
+        data=csv,
+        file_name="escala_final.csv",
+        mime="text/csv",
+        on_click=lambda: registrar_log(
             usuario_email,
             "exportar_escala",
-            detalhes="Administrador exportou a escala final"
-        )
-
-        st.success("Arquivo gerado com sucesso!")
-
-    # ============================
-    #  ADMIN TAMBÉM PODE SE INSCREVER COMO MÉDICO
-    # ============================
+            detalhes="Administrador exportou a escala final",
+        ),
+    )
 
     st.subheader("🩺 Inscrição como Médico (Admin)")
 
     if not nome_usuario:
         st.info("Seu email não está cadastrado como médico na aba 'medicos'.")
     else:
-        st.markdown("### 📅 Plantões disponíveis")
         st.dataframe(plantoes_df, use_container_width=True)
 
-        # Criar lista de plantões
-        opcoes = []
-        for idx, row in plantoes_df.iterrows():
-            label = f"{idx} - {row['data']} {row['horario']}"
-            opcoes.append((label, idx))
-
+        opcoes = [(linha_para_label(idx, row), idx) for idx, row in plantoes_df.iterrows()]
         if opcoes:
-            labels = [o[0] for o in opcoes]
-            escolha = st.selectbox("Selecione um plantão para gerenciar sua inscrição:", labels, key="admin_escolha")
+            escolha = st.selectbox(
+                "Selecione um plantão para gerenciar sua inscrição:",
+                [o[0] for o in opcoes],
+                key="admin_escolha",
+            )
             idx_escolhido = dict(opcoes)[escolha]
-
             linha = plantoes_df.loc[idx_escolhido]
 
             st.write("### Detalhes do plantão selecionado")
-            st.write(linha[["data", "horario", "vagas"] + colunas_candidatos])
+            st.write(linha[[c for c in ["data", "horario", "vagas"] + COLUNAS_CANDIDATOS if c in linha.index]])
 
-            # INSCRIÇÃO (ADMIN SEMPRE PODE)
             if st.button("➕ Inscrever-me neste plantão (como médico)", key="admin_inscrever"):
-                candidatos = [linha[col] for col in colunas_candidatos]
-
-                if nome_usuario in candidatos:
-                    st.warning("Você já está inscrito neste plantão.")
+                ok, msg, novo_df = inscrever_usuario(plantoes_df, idx_escolhido, nome_usuario)
+                if ok:
+                    save_plantoes(novo_df)
+                    registrar_log(
+                        usuario_email,
+                        "inscricao_admin",
+                        plantao=f"{linha.get('data', '')} {linha.get('horario', '')}",
+                        detalhes=f"Admin inscrito como {nome_usuario}",
+                    )
+                    st.success(msg)
+                    st.rerun()
                 else:
-                    for col in colunas_candidatos:
-                        if linha[col] in ["", None]:
-                            plantoes_df.at[idx_escolhido, col] = nome_usuario
-                            save_plantoes(plantoes_df)
-                            registrar_log(
-                                usuario_email,
-                                "inscricao_admin",
-                                plantao=f"{linha['data']} {linha['horario']}",
-                                detalhes=f"Admin inscrito como {nome_usuario}"
-                            )
-                            st.success("✔️ Inscrição registrada com sucesso!")
-                            st.stop()
+                    st.warning(msg)
 
-                    st.error("Este plantão já atingiu o número máximo de candidatos.")
-
-            # REMOVER INSCRIÇÃO (ADMIN SEMPRE PODE)
             if st.button("❌ Remover minha inscrição deste plantão (como médico)", key="admin_remover"):
-                candidatos = [linha[col] for col in colunas_candidatos]
-
-                if nome_usuario not in candidatos:
-                    st.warning("Você não está inscrito neste plantão.")
-                else:
-                    for col in colunas_candidatos:
-                        if plantoes_df.at[idx_escolhido, col] == nome_usuario:
-                            plantoes_df.at[idx_escolhido, col] = ""
-
-                    save_plantoes(plantoes_df)
+                ok, msg, novo_df = remover_usuario(plantoes_df, idx_escolhido, nome_usuario)
+                if ok:
+                    save_plantoes(novo_df)
                     registrar_log(
                         usuario_email,
                         "remover_inscricao_admin",
-                        plantao=f"{linha['data']} {linha['horario']}",
-                        detalhes=f"Admin removeu inscrição de {nome_usuario}"
+                        plantao=f"{linha.get('data', '')} {linha.get('horario', '')}",
+                        detalhes=f"Admin removeu inscrição de {nome_usuario}",
                     )
-                    st.success("✔️ Inscrição removida.")
-                    st.stop()
+                    st.success(msg)
+                    st.rerun()
+                else:
+                    st.warning(msg)
 
-        # MEUS PLANTÕES (ADMIN COMO MÉDICO)
         st.markdown("### 📌 Meus plantões (como médico)")
-
-        mask = plantoes_df[colunas_candidatos].apply(lambda row: nome_usuario in row.values, axis=1)
-        meus_plantoes = plantoes_df[mask]
-
+        meus_plantoes = tabela_meus_plantoes(plantoes_df, nome_usuario)
         if meus_plantoes.empty:
             st.info("Você ainda não está inscrito em nenhum plantão.")
         else:
             st.dataframe(meus_plantoes, use_container_width=True)
-
-# ============================
-# 4) ÁREA DO MÉDICO
-# ============================
 
 else:
     if not nome_usuario:
@@ -248,93 +246,55 @@ else:
         st.stop()
 
     st.subheader("🩺 Área do Médico")
-
-    st.markdown("""
-    Aqui você pode visualizar todos os plantões disponíveis e se inscrever
-    apenas para os horários desejados.  
-    Você só pode editar **as suas próprias inscrições**.
-    """)
+    st.markdown("Aqui você pode visualizar os plantões e gerenciar apenas as suas próprias inscrições.")
 
     st.markdown("### 📅 Plantões disponíveis")
-    st.dataframe(plantoes_df, use_container_width=True)
+    st.dataframe(tabela_medico(plantoes_df, nome_usuario), use_container_width=True)
 
-    # Criar lista de plantões
-    opcoes = []
-    for idx, row in plantoes_df.iterrows():
-        label = f"{idx} - {row['data']} {row['horario']}"
-        opcoes.append((label, idx))
-
+    opcoes = [(linha_para_label(idx, row), idx) for idx, row in plantoes_df.iterrows()]
     if not opcoes:
         st.info("Nenhum plantão cadastrado no momento.")
         st.stop()
 
-    labels = [o[0] for o in opcoes]
-    escolha = st.selectbox("Selecione um plantão para gerenciar sua inscrição:", labels)
+    escolha = st.selectbox("Selecione um plantão para gerenciar sua inscrição:", [o[0] for o in opcoes])
     idx_escolhido = dict(opcoes)[escolha]
-
     linha = plantoes_df.loc[idx_escolhido]
 
     st.write("### Detalhes do plantão selecionado")
-    st.write(linha[["data", "horario", "vagas"] + colunas_candidatos])
-
-    # ============================
-    # INSCRIÇÃO (MÉDICO — SEM CONTROLE DE HORÁRIO)
-    # ============================
+    st.write(linha[[c for c in ["data", "horario", "vagas"] if c in linha.index]])
 
     if st.button("➕ Inscrever-me neste plantão"):
-        candidatos = [linha[col] for col in colunas_candidatos]
-
-        if nome_usuario in candidatos:
-            st.warning("Você já está inscrito neste plantão. Não é necessário repetir.")
+        ok, msg, novo_df = inscrever_usuario(plantoes_df, idx_escolhido, nome_usuario)
+        if ok:
+            save_plantoes(novo_df)
+            registrar_log(
+                usuario_email,
+                "inscricao",
+                plantao=f"{linha.get('data', '')} {linha.get('horario', '')}",
+                detalhes=f"Inscrito como {nome_usuario}",
+            )
+            st.success(msg)
+            st.rerun()
         else:
-            for col in colunas_candidatos:
-                if linha[col] in ["", None]:
-                    plantoes_df.at[idx_escolhido, col] = nome_usuario
-                    save_plantoes(plantoes_df)
-                    registrar_log(
-                        usuario_email,
-                        "inscricao",
-                        plantao=f"{linha['data']} {linha['horario']}",
-                        detalhes=f"Inscrito como {nome_usuario}"
-                    )
-                    st.success("✔️ Sua inscrição foi registrada com sucesso!")
-                    st.stop()
-
-            st.error("Este plantão já atingiu o número máximo de candidatos.")
-
-    # ============================
-    # REMOVER INSCRIÇÃO (MÉDICO — SEM CONTROLE DE HORÁRIO)
-    # ============================
+            st.warning(msg)
 
     if st.button("❌ Remover minha inscrição deste plantão"):
-        candidatos = [linha[col] for col in colunas_candidatos]
-
-        if nome_usuario not in candidatos:
-            st.warning("Você não está inscrito neste plantão.")
-        else:
-            for col in colunas_candidatos:
-                if plantoes_df.at[idx_escolhido, col] == nome_usuario:
-                    plantoes_df.at[idx_escolhido, col] = ""
-
-            save_plantoes(plantoes_df)
+        ok, msg, novo_df = remover_usuario(plantoes_df, idx_escolhido, nome_usuario)
+        if ok:
+            save_plantoes(novo_df)
             registrar_log(
                 usuario_email,
                 "remover_inscricao",
-                plantao=f"{linha['data']} {linha['horario']}",
-                detalhes=f"Removeu inscrição de {nome_usuario}"
+                plantao=f"{linha.get('data', '')} {linha.get('horario', '')}",
+                detalhes=f"Removeu inscrição de {nome_usuario}",
             )
-            st.success("✔️ Sua inscrição foi removida.")
-            st.stop()
-
-    # ============================
-    # MEUS PLANTÕES (MÉDICO)
-    # ============================
+            st.success(msg)
+            st.rerun()
+        else:
+            st.warning(msg)
 
     st.markdown("### 📌 Meus plantões")
-
-    mask = plantoes_df[colunas_candidatos].apply(lambda row: nome_usuario in row.values, axis=1)
-    meus_plantoes = plantoes_df[mask]
-
+    meus_plantoes = tabela_meus_plantoes(plantoes_df, nome_usuario)
     if meus_plantoes.empty:
         st.info("Você ainda não está inscrito em nenhum plantão.")
     else:
