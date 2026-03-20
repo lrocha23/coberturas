@@ -65,10 +65,8 @@ def load_medicos():
 @st.cache_data(ttl=15)
 def load_usuarios():
     df = _load_worksheet_df("usuarios")
-
     df["admin"] = _normalize_bool_series(df["admin"]) if "admin" in df.columns else False
     df["ativo"] = _normalize_bool_series(df["ativo"]) if "ativo" in df.columns else True
-
     return df
 
 
@@ -78,6 +76,17 @@ def load_historico_mes_passado():
         return _load_worksheet_df("historico_mes_passado")
     except Exception:
         return pd.DataFrame(columns=["nome", "plantoes", "horas"])
+
+
+@st.cache_data(ttl=10)
+def load_config():
+    try:
+        df = _load_worksheet_df("config")
+        if df.empty:
+            return pd.DataFrame(columns=["chave", "valor"])
+        return df
+    except Exception:
+        return pd.DataFrame(columns=["chave", "valor"])
 
 
 def _get_or_create_worksheet(worksheet_name: str, rows: int = 200, cols: int = 20):
@@ -116,6 +125,7 @@ def _save_dataframe_to_worksheet(worksheet_name: str, df: pd.DataFrame):
     load_medicos.clear()
     load_usuarios.clear()
     load_historico_mes_passado.clear()
+    load_config.clear()
 
 
 def save_plantoes(df: pd.DataFrame):
@@ -134,13 +144,52 @@ def save_historico_mes_atual(df: pd.DataFrame):
     _save_dataframe_to_worksheet("historico_mes_atual", df)
 
 
+def save_snapshot_plantoes(df: pd.DataFrame):
+    _save_dataframe_to_worksheet("plantoes_fechado", df)
+
+
+def save_config(df: pd.DataFrame):
+    _save_dataframe_to_worksheet("config", df)
+
+
+def get_config_value(chave: str, default: str = "") -> str:
+    df = load_config()
+    if df.empty or "chave" not in df.columns or "valor" not in df.columns:
+        return default
+
+    match = df[df["chave"].astype(str).str.strip().str.lower() == chave.strip().lower()]
+    if match.empty:
+        return default
+    return str(match.iloc[0]["valor"]).strip()
+
+
+def set_config_value(chave: str, valor: str):
+    df = load_config()
+    if df.empty:
+        df = pd.DataFrame(columns=["chave", "valor"])
+
+    if "chave" not in df.columns:
+        df["chave"] = ""
+    if "valor" not in df.columns:
+        df["valor"] = ""
+
+    mask = df["chave"].astype(str).str.strip().str.lower() == chave.strip().lower()
+    if mask.any():
+        df.loc[mask, "valor"] = str(valor)
+    else:
+        df = pd.concat([df, pd.DataFrame([{"chave": chave, "valor": str(valor)}])], ignore_index=True)
+
+    save_config(df)
+
+
 def registrar_log(usuario, acao, plantao="", detalhes=""):
     ws = _get_or_create_worksheet("logs", rows=500, cols=10)
 
     tz = pytz.timezone("America/Sao_Paulo")
     timestamp = datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S")
 
-    if ws.row_count == 0 or not ws.get("A1:E1"):
+    existing = ws.get("A1:E1")
+    if not existing:
         ws.update("A1", [["timestamp", "usuario", "acao", "plantao", "detalhes"]])
 
     ws.append_row([timestamp, usuario, acao, plantao, detalhes], value_input_option="USER_ENTERED")

@@ -1,5 +1,7 @@
 import streamlit as st
 import pandas as pd
+from datetime import datetime
+import pytz
 
 from backend import (
     load_plantoes,
@@ -9,7 +11,10 @@ from backend import (
     load_historico_mes_passado,
     save_resultado_escala,
     save_historico_mes_atual,
+    save_snapshot_plantoes,
     registrar_log,
+    get_config_value,
+    set_config_value,
 )
 from auth_module import login, trocar_senha, logout
 from selection_module import generate_scale_from_df
@@ -17,6 +22,11 @@ from selection_module import generate_scale_from_df
 st.set_page_config(page_title="Plantões UTI", layout="wide")
 
 COLUNAS_CANDIDATOS = ["candidato1", "candidato2", "candidato3", "candidato4", "candidato5"]
+TZ = pytz.timezone("America/Sao_Paulo")
+
+
+def agora_sp():
+    return datetime.now(TZ)
 
 
 def normalizar_texto(valor):
@@ -57,6 +67,37 @@ def validar_sem_duplicidade(df):
             raise ValueError(f"Linha {idx + 1}: o mesmo médico aparece mais de uma vez.")
 
 
+def inscricoes_abertas():
+    status = get_config_value("status_inscricoes", "abertas").strip().lower()
+    deadline_str = get_config_value("deadline_inscricoes", "").strip()
+
+    abertas_por_status = status != "fechadas"
+
+    if deadline_str:
+        try:
+            deadline = datetime.strptime(deadline_str, "%Y-%m-%d %H:%M").replace(tzinfo=TZ)
+            abertas_por_deadline = agora_sp() <= deadline
+        except Exception:
+            abertas_por_deadline = True
+    else:
+        abertas_por_deadline = True
+
+    return abertas_por_status and abertas_por_deadline
+
+
+def descricao_status_inscricoes():
+    status = get_config_value("status_inscricoes", "abertas").strip().lower()
+    deadline_str = get_config_value("deadline_inscricoes", "").strip()
+
+    if status == "fechadas":
+        return "Fechadas manualmente pelo administrador."
+
+    if deadline_str:
+        return f"Abertas até {deadline_str} (horário de São Paulo)."
+
+    return "Abertas sem prazo definido."
+
+
 def inscrever_usuario(df, idx_escolhido, nome_usuario):
     df = df.copy()
     linha = df.loc[idx_escolhido]
@@ -75,9 +116,13 @@ def inscrever_usuario(df, idx_escolhido, nome_usuario):
 
 def remover_usuario(df, idx_escolhido, nome_usuario):
     df = df.copy()
+    estava_inscrito = False
     for col in COLUNAS_CANDIDATOS:
         if normalizar_texto(df.at[idx_escolhido, col]) == nome_usuario:
             df.at[idx_escolhido, col] = ""
+            estava_inscrito = True
+    if not estava_inscrito:
+        return False, "Você não está inscrito neste plantão.", df
     return True, "✔️ Sua inscrição foi removida.", df
 
 
@@ -135,12 +180,17 @@ nome_usuario = None
 if not match_medico.empty:
     nome_usuario = normalizar_texto(match_medico.iloc[0]["nome"])
 
-if is_admin:
-    st.subheader("👑 Área do Administrador")
+status_texto = descricao_status_inscricoes()
+if inscricoes_abertas():
+    st.info(f"🟢 Inscrições abertas. {status_texto}")
+else:
+    st.warning(f"🔴 Inscrições fechadas. {status_texto}")
 
-    abas = st.tabs(["Editar plantões", "Gerar escala", "Minha inscrição (como médico)"])
+if is_admin:
+    abas = st.tabs(["Editar plantões", "Controle da rodada", "Gerar escala", "Minha inscrição (como médico)"])
 
     with abas[0]:
+        st.subheader("👑 Editar plantões")
         st.markdown(
             "A aba **plantoes** precisa ter estas colunas: "
             "`data`, `horario`, `vagas`, `candidato1` ... `candidato5`."
@@ -177,13 +227,70 @@ if is_admin:
         st.dataframe(plantoes_df, use_container_width=True)
 
     with abas[1]:
-        st.markdown("Gera a seleção automaticamente a partir das candidaturas registradas.")
+        st.subheader("🧭 Controle da rodada")
 
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.markdown("**Status atual**")
+            st.write(status_texto)
+
+            if st.button("Abrir inscrições"):
+                set_config_value("status_inscricoes", "abertas")
+                registrar_log(usuario_email, "abrir_inscricoes", detalhes="Admin abriu as inscrições")
+                st.success("Inscrições abertas.")
+                st.rerun()
+
+            if st.button("Fechar inscrições"):
+                set_config_value("status_inscricoes", "fechadas")
+                registrar_log(usuario_email, "fechar_inscricoes", detalhes="Admin fechou as inscrições")
+                st.success("Inscrições fechadas.")
+                st.rerun()
+
+        with col2:
+            st.markdown("**Prazo automático**")
+            deadline_atual = get_config_value("deadline_inscricoes", "")
+            novo_deadline = st.text_input(
+                "Deadline (formato YYYY-MM-DD HH:MM)",
+                value=deadline_atual,
+                help="Exemplo: 2026-03-25 18:00",
+            )
+
+            if st.button("Salvar deadline"):
+                set_config_value("deadline_inscricoes", novo_deadline.strip())
+                registrar_log(usuario_email, "definir_deadline", detalhes=f"Deadline definido: {novo_deadline.strip()}")
+                st.success("Deadline salvo.")
+                st.rerun()
+
+            if st.button("Remover deadline"):
+                set_config_value("deadline_inscricoes", "")
+                registrar_log(usuario_email, "remover_deadline", detalhes="Deadline removido")
+                st.success("Deadline removido.")
+                st.rerun()
+
+        st.markdown("---")
+        st.markdown("**Snapshot da rodada**")
+        st.caption("Cria uma cópia da aba 'plantoes' em 'plantoes_fechado' antes da geração da escala.")
+
+        if st.button("Salvar snapshot de plantoes_fechado"):
+            try:
+                save_snapshot_plantoes(plantoes_df)
+                registrar_log(usuario_email, "snapshot_plantoes", detalhes="Snapshot salvo em plantoes_fechado")
+                st.success("Snapshot salvo com sucesso em 'plantoes_fechado'.")
+            except Exception as e:
+                st.error(f"Não foi possível salvar o snapshot: {e}")
+
+    with abas[2]:
+        st.subheader("⚙️ Gerar escala")
+        st.markdown("Gera a seleção automaticamente a partir das candidaturas registradas.")
         seed = st.number_input("Seed do sorteio", min_value=1, value=42, step=1)
         historico_df = load_historico_mes_passado()
 
-        if st.button("⚙️ Gerar escala automática"):
+        if st.button("Gerar snapshot + fechar inscrições + gerar escala"):
             try:
+                save_snapshot_plantoes(plantoes_df)
+                set_config_value("status_inscricoes", "fechadas")
+
                 resultado_df, historico_atual_df = generate_scale_from_df(
                     plantoes_df=plantoes_df,
                     historico_df=historico_df,
@@ -195,10 +302,13 @@ if is_admin:
                 registrar_log(
                     usuario_email,
                     "gerar_escala",
-                    detalhes=f"Escala gerada automaticamente com seed={int(seed)}",
+                    detalhes=f"Escala gerada automaticamente com seed={int(seed)}; inscrições fechadas; snapshot salvo",
                 )
 
-                st.success("Escala gerada e salva nas abas 'resultado_escala' e 'historico_mes_atual'.")
+                st.success(
+                    "Escala gerada. Snapshot salvo em 'plantoes_fechado', inscrições fechadas, "
+                    "resultado salvo em 'resultado_escala' e histórico em 'historico_mes_atual'."
+                )
                 st.dataframe(resultado_df, use_container_width=True)
 
                 csv = resultado_df.to_csv(index=False).encode("utf-8")
@@ -208,58 +318,57 @@ if is_admin:
                     file_name="resultado_escala.csv",
                     mime="text/csv",
                 )
-
             except Exception as e:
                 st.error(f"Não foi possível gerar a escala: {e}")
 
-    with abas[2]:
-        st.markdown("Você também pode se inscrever como médico.")
-
+    with abas[3]:
+        st.subheader("🩺 Minha inscrição (como médico)")
         if not nome_usuario:
             st.info("Seu email não está cadastrado como médico na aba 'medicos'.")
         else:
             opcoes = [(linha_para_label(idx, row), idx) for idx, row in plantoes_df.iterrows()]
             if opcoes:
-                escolha = st.selectbox(
-                    "Selecione um plantão:",
-                    [o[0] for o in opcoes],
-                    key="admin_escolha",
-                )
+                escolha = st.selectbox("Selecione um plantão:", [o[0] for o in opcoes], key="admin_escolha")
                 idx_escolhido = dict(opcoes)[escolha]
                 linha = plantoes_df.loc[idx_escolhido]
 
                 st.write(linha[[c for c in ["data", "horario", "vagas"] + COLUNAS_CANDIDATOS if c in linha.index]])
 
                 if st.button("➕ Inscrever-me", key="admin_inscrever"):
-                    ok, msg, novo_df = inscrever_usuario(plantoes_df, idx_escolhido, nome_usuario)
-                    if ok:
-                        save_plantoes(novo_df)
-                        registrar_log(
-                            usuario_email,
-                            "inscricao_admin",
-                            plantao=f"{linha.get('data', '')} {linha.get('horario', '')}",
-                            detalhes=f"Admin inscrito como {nome_usuario}",
-                        )
-                        st.success(msg)
-                        st.rerun()
+                    if not inscricoes_abertas():
+                        st.warning("As inscrições estão fechadas.")
                     else:
-                        st.warning(msg)
+                        ok, msg, novo_df = inscrever_usuario(plantoes_df, idx_escolhido, nome_usuario)
+                        if ok:
+                            save_plantoes(novo_df)
+                            registrar_log(
+                                usuario_email,
+                                "inscricao_admin",
+                                plantao=f"{linha.get('data', '')} {linha.get('horario', '')}",
+                                detalhes=f"Admin inscrito como {nome_usuario}",
+                            )
+                            st.success(msg)
+                            st.rerun()
+                        else:
+                            st.warning(msg)
 
                 if st.button("❌ Remover minha inscrição", key="admin_remover"):
-                    ok, msg, novo_df = remover_usuario(plantoes_df, idx_escolhido, nome_usuario)
-                    if ok:
-                        save_plantoes(novo_df)
-                        registrar_log(
-                            usuario_email,
-                            "remover_inscricao_admin",
-                            plantao=f"{linha.get('data', '')} {linha.get('horario', '')}",
-                            detalhes=f"Admin removeu inscrição de {nome_usuario}",
-                        )
-                        st.success(msg)
-                        st.rerun()
+                    if not inscricoes_abertas():
+                        st.warning("As inscrições estão fechadas.")
                     else:
-                        st.warning(msg)
-
+                        ok, msg, novo_df = remover_usuario(plantoes_df, idx_escolhido, nome_usuario)
+                        if ok:
+                            save_plantoes(novo_df)
+                            registrar_log(
+                                usuario_email,
+                                "remover_inscricao_admin",
+                                plantao=f"{linha.get('data', '')} {linha.get('horario', '')}",
+                                detalhes=f"Admin removeu inscrição de {nome_usuario}",
+                            )
+                            st.success(msg)
+                            st.rerun()
+                        else:
+                            st.warning(msg)
 else:
     if not nome_usuario:
         st.error("Seu email não está cadastrado na aba 'medicos'. Fale com o administrador.")
@@ -281,34 +390,40 @@ else:
     st.write(linha[[c for c in ["data", "horario", "vagas"] if c in linha.index]])
 
     if st.button("➕ Inscrever-me neste plantão"):
-        ok, msg, novo_df = inscrever_usuario(plantoes_df, idx_escolhido, nome_usuario)
-        if ok:
-            save_plantoes(novo_df)
-            registrar_log(
-                usuario_email,
-                "inscricao",
-                plantao=f"{linha.get('data', '')} {linha.get('horario', '')}",
-                detalhes=f"Inscrito como {nome_usuario}",
-            )
-            st.success(msg)
-            st.rerun()
+        if not inscricoes_abertas():
+            st.warning("As inscrições estão fechadas.")
         else:
-            st.warning(msg)
+            ok, msg, novo_df = inscrever_usuario(plantoes_df, idx_escolhido, nome_usuario)
+            if ok:
+                save_plantoes(novo_df)
+                registrar_log(
+                    usuario_email,
+                    "inscricao",
+                    plantao=f"{linha.get('data', '')} {linha.get('horario', '')}",
+                    detalhes=f"Inscrito como {nome_usuario}",
+                )
+                st.success(msg)
+                st.rerun()
+            else:
+                st.warning(msg)
 
     if st.button("❌ Remover minha inscrição deste plantão"):
-        ok, msg, novo_df = remover_usuario(plantoes_df, idx_escolhido, nome_usuario)
-        if ok:
-            save_plantoes(novo_df)
-            registrar_log(
-                usuario_email,
-                "remover_inscricao",
-                plantao=f"{linha.get('data', '')} {linha.get('horario', '')}",
-                detalhes=f"Removeu inscrição de {nome_usuario}",
-            )
-            st.success(msg)
-            st.rerun()
+        if not inscricoes_abertas():
+            st.warning("As inscrições estão fechadas.")
         else:
-            st.warning(msg)
+            ok, msg, novo_df = remover_usuario(plantoes_df, idx_escolhido, nome_usuario)
+            if ok:
+                save_plantoes(novo_df)
+                registrar_log(
+                    usuario_email,
+                    "remover_inscricao",
+                    plantao=f"{linha.get('data', '')} {linha.get('horario', '')}",
+                    detalhes=f"Removeu inscrição de {nome_usuario}",
+                )
+                st.success(msg)
+                st.rerun()
+            else:
+                st.warning(msg)
 
     st.markdown("### 📌 Meus plantões")
     meus_plantoes = tabela_meus_plantoes(plantoes_df, nome_usuario)
